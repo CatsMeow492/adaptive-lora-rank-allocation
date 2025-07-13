@@ -91,10 +91,14 @@ def get_training_args(
     logging_steps: int = 50,
     eval_steps: int = 500,
     save_steps: int = 1000,
-    use_fp16: bool = True,
+    use_fp16: bool = None,
     seed: int = 42,
 ) -> TrainingArguments:
     """Create training arguments."""
+    
+    # Auto-detect best precision based on hardware
+    if use_fp16 is None:
+        use_fp16 = torch.cuda.is_available()
     
     return TrainingArguments(
         output_dir=output_dir,
@@ -107,7 +111,7 @@ def get_training_args(
         weight_decay=weight_decay,
         logging_steps=logging_steps,
         eval_steps=eval_steps,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         save_steps=save_steps,
         save_strategy="steps",
         load_best_model_at_end=True,

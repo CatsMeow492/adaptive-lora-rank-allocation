@@ -160,7 +160,7 @@ def run_single_experiment(
         logging_steps=50,
         eval_steps=500,
         save_steps=1000,
-        use_fp16=True,
+        use_fp16=None,
         seed=seed,
     )
     
