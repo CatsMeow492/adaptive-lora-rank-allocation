@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 import torch
+import numpy as np
 from transformers import set_seed
 
 from src.data.loader import load_sst2_dataset, load_wikitext2_dataset, get_data_collator
@@ -15,6 +16,7 @@ from src.models.factory import (
     load_model_and_tokenizer,
     create_lora_config,
     get_default_target_modules,
+    create_quantization_config,
 )
 from src.train import train_model, get_training_args
 
@@ -86,7 +88,9 @@ def run_single_experiment(
     seed: int = 42,
     epochs: int = 3,
     batch_size: int = 8,
-    learning_rate: float = 2e-4,
+    learning_rate: float = 1e-4,
+    quant_backend: str = "auto",
+    use_fp16: bool = None,
 ) -> Dict[str, Any]:
     """Run a single experiment configuration."""
     
@@ -110,23 +114,45 @@ def run_single_experiment(
     # Get target modules
     target_modules = get_default_target_modules(model_name)
     
+    # Calculate total training steps for AdaLoRA
+    total_steps = None
+    if config.get("lora_adaptive", False):
+        # Estimate based on dataset size and training parameters
+        if task == "sst2":
+            dataset_size = 67349  # SST-2 train size
+        else:
+            dataset_size = 36718  # WikiText-2 train size (approx)
+        
+        steps_per_epoch = dataset_size // (batch_size * 2)  # 2 = gradient_accumulation_steps
+        total_steps = steps_per_epoch * epochs
+    
     # Create LoRA config
     lora_config = create_lora_config(
         task_type=task_type,
         rank=config.get("lora_rank", 8),
-        alpha=config.get("lora_alpha", 16),
+        # alpha parameter removed - let factory set alpha=rank for stability
         dropout=config.get("lora_dropout", 0.1),
         target_modules=target_modules,
         adaptive=config.get("lora_adaptive", False),
         init_r=config.get("init_r", 12),
         target_r=config.get("target_r", 4),
+        total_steps=total_steps,
     )
+    
+    # Create quantization config if specified
+    quantization_config = None
+    if config.get("quantization_bits") is not None:
+        quantization_config = create_quantization_config(
+            config.get("quantization_bits"), 
+            device_map="auto",
+            backend=quant_backend
+        )
     
     # Load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(
         model_name=model_name,
         task_type=task_type,
-        quantization_bits=config.get("quantization_bits"),
+        quantization_config=quantization_config,
         lora_config=lora_config,
         device_map="auto",
     )
@@ -146,21 +172,30 @@ def run_single_experiment(
     # Get data collator
     data_collator = get_data_collator(tokenizer, task_type)
     
+    # Adjust learning rate for language modeling tasks to prevent NaN loss
+    adjusted_learning_rate = learning_rate
+    adjusted_warmup_steps = 100
+    if task_type == "language_modeling":
+        adjusted_learning_rate = learning_rate * 0.05  # Reduce LR by 20x for language modeling (5e-6 from 1e-4)
+        adjusted_warmup_steps = 500  # Increase warmup for stability
+        print(f"Adjusted learning rate for language modeling: {adjusted_learning_rate}")
+        print(f"Adjusted warmup steps for language modeling: {adjusted_warmup_steps}")
+    
     # Create training arguments
     training_args = get_training_args(
         output_dir=os.path.join(output_dir, run_name),
         task_type=task_type,
         num_train_epochs=epochs,
-        learning_rate=learning_rate,
+        learning_rate=adjusted_learning_rate,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         gradient_accumulation_steps=2,
-        warmup_steps=100,
+        warmup_steps=adjusted_warmup_steps,
         weight_decay=0.01,
         logging_steps=50,
         eval_steps=500,
         save_steps=1000,
-        use_fp16=None,
+        use_fp16=use_fp16,
         seed=seed,
     )
     
@@ -203,11 +238,45 @@ def main():
     parser.add_argument("--epochs", type=int, default=3,
                        help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=8,
-                       help="Batch size")
-    parser.add_argument("--learning-rate", type=float, default=2e-4,
-                       help="Learning rate")
+                        help="Batch size")
+    parser.add_argument("--learning-rate", type=float, default=1e-4,
+                        help="Learning rate")
+    parser.add_argument("--quant-backend", 
+                        choices=["auto", "cuda-4bit", "cuda-8bit", "cpu-int8", "none"],
+                        default="auto",
+                        help="Quantization backend to use")
+    parser.add_argument("--mps-safe", action="store_true",
+                        help="Use MPS-safe settings (smaller batch sizes) for Apple Silicon")
+    parser.add_argument("--fp32", action="store_true",
+                        help="Force FP32 precision (recommended for language modeling on MPS)")
     
     args = parser.parse_args()
+    
+    # Determine task type early for precision logic
+    task_type = "classification" if args.task == "sst2" else "language_modeling"
+    
+    # Auto-detect and adjust for MPS systems
+    import platform
+    is_mac_mps = (
+        platform.system() == "Darwin" and 
+        platform.processor() == "arm" and 
+        torch.backends.mps.is_available()
+    )
+    
+    # Apply MPS-safe settings if detected or requested
+    if is_mac_mps or args.mps_safe:
+        if args.batch_size > 4:
+            print(f"MPS detected: reducing batch size from {args.batch_size} to 4 for stability")
+            args.batch_size = 4
+    
+    # Determine precision settings
+    use_fp16 = None
+    if args.fp32:
+        use_fp16 = False
+        print("Forcing FP32 precision")
+    elif task_type == "language_modeling" and is_mac_mps:
+        use_fp16 = False
+        print("Using FP32 for language modeling on MPS for numerical stability")
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -222,6 +291,8 @@ def main():
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        quant_backend=args.quant_backend,
+        use_fp16=use_fp16,
     )
     
     # Save consolidated results

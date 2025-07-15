@@ -1,0 +1,17 @@
+{
+  "train_loss": 0.22818017578125,
+  "eval_metrics": {
+    "eval_loss": NaN,
+    "eval_accuracy": 0.4908256880733945,
+    "eval_f1": 0.32318983768525056,
+    "eval_runtime": 5.7954,
+    "eval_samples_per_second": 150.465,
+    "eval_steps_per_second": 18.808,
+    "epoch": 0.4751158094785604
+  },
+  "trainable_params": 1340930,
+  "total_params": 110824708,
+  "trainable_percent": 1.2099558159900587,
+  "peak_memory_mb": 44991.90625,
+  "training_time_seconds": 565.8601231575012
+}

@@ -1,168 +1,124 @@
 # Adaptive LoRA Rank Allocation with Mixed-Precision Quantization
 
-This repository contains the experimental code for investigating whether jointly optimizing LoRA rank allocation and mixed-precision quantization yields better efficiency-performance trade-offs than existing baselines on laptop-class hardware.
+This project investigates joint optimization of LoRA rank allocation and mixed-precision quantization for efficient fine-tuning on laptop-class hardware.
 
-## 🎯 Project Overview
+## Quick Start
 
-We explore the combination of:
-- **Adaptive LoRA rank allocation** (AdaLoRA) - dynamically assigning ranks to layers based on importance
-- **Mixed-precision quantization** (8-bit/4-bit) - using different precisions for different layers
-- **Resource constraints** - all experiments run on Apple Silicon MacBooks with ≤16GB RAM
-
-## 🏗️ Architecture
-
-```
-src/
-├── data/           # Dataset loading utilities
-├── models/         # Model factory functions
-└── train.py        # Training pipeline with monitoring
-
-run_experiment.py   # Single experiment runner
-run_all_experiments.py  # Full experiment matrix
-tests/              # Unit tests
-```
-
-## 📋 Experimental Matrix
-
-| Config ID | Method | Quantization | LoRA Strategy |
-|-----------|--------|-------------|---------------|
-| B-FP | Baseline | FP16 | Fixed rank=8 |
-| B-Q4 | QLoRA | 4-bit | Fixed rank=8 |
-| B-Ada | AdaLoRA | FP16 | Adaptive (12→4) |
-| Joint-1 | Joint | 4-bit | Adaptive (12→4) |
-| Joint-2 | Joint | Mixed 8/4-bit | Adaptive (12→4) |
-| Joint-3 | Joint | Mixed 8/4-bit | Manual ranks |
-
-Tasks: **SST-2** (classification) and **WikiText-2** (language modeling)
-
-## 🚀 Quick Start
-
-### Installation
+### Local Development (Mac/Linux)
 
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/adaptive-lora-rank-allocation.git
-cd adaptive-lora-rank-allocation
-
 # Install dependencies
-make install
+pip install -r requirements.txt
 
-# Development setup (optional)
-make setup
-```
-
-### Running Experiments
-
-```bash
-# Single experiment
+# Run single experiment
 python run_experiment.py --config B-FP --task sst2 --model bert-base-uncased
 
-# Full experiment matrix (12 runs)
-python run_all_experiments.py
-
-# Quick test run
-make test-run
+# Run full experiment matrix
+python run_all_experiments.py --epochs 3 --batch-size 8
 ```
 
-### Environment Variables
+### Apple Silicon (MPS) Compatibility
 
-Create `.env` file (optional):
+Apple Silicon Macs have MPS (Metal Performance Shaders) limitations that can cause tensor size errors. The system automatically detects and applies MPS-safe settings:
+
 ```bash
-WANDB_API_KEY=your_wandb_key  # For experiment tracking
-HF_TOKEN=your_hf_token        # For private models
+# Automatic MPS detection (recommended)
+python run_experiment.py --config B-FP --task sst2 --model bert-base-uncased
+
+# Force MPS-safe settings (smaller batch sizes)
+python run_experiment.py --config B-FP --task sst2 --model bert-base-uncased --mps-safe
+
+# Manual batch size reduction
+python run_experiment.py --config B-FP --task sst2 --model bert-base-uncased --batch-size 4
 ```
 
-## 🧪 Experiment Configurations
+**If you encounter MPS tensor size errors**, try:
+1. Reduce batch size: `--batch-size 4` or `--batch-size 2`
+2. Use Docker with GPU backend (recommended for quantization)
+3. Disable quantization: `--quant-backend none`
 
-### Baselines
-- **B-FP**: Standard LoRA with FP16 weights
-- **B-Q4**: QLoRA with 4-bit quantization
-- **B-Ada**: AdaLoRA with FP16 weights
+### Docker Deployment (GPU Recommended)
 
-### Joint Methods
-- **Joint-1**: AdaLoRA + 4-bit quantization
-- **Joint-2**: AdaLoRA + mixed-precision (critical layers 8-bit, others 4-bit)
-- **Joint-3**: Manual rank allocation + mixed-precision
-
-## 📊 Results Analysis
-
-Results are saved in `results/` directory:
-- `experiment_summary.csv` - Consolidated metrics table
-- `all_results.json` - Full experiment data
-- Individual run directories with checkpoints
-
-Key metrics tracked:
-- Task performance (accuracy/perplexity)
-- Trainable parameters (% of total)
-- Peak memory usage (MB)
-- Training time (seconds)
-
-## 🔧 Development
-
-### Testing
 ```bash
-make test        # Run unit tests
-make lint        # Check code quality
-make format      # Format code
+# Build and run on GPU
+./scripts/docker-run.sh --build --gpu --wandb-key $WANDB_API_KEY run-all
+
+# Run single experiment on CPU
+./scripts/docker-run.sh --cpu run B-FP sst2
+
+# Interactive development
+./scripts/docker-run.sh --gpu shell
 ```
 
-### Adding New Experiments
-1. Add config to `get_experiment_config()` in `run_experiment.py`
-2. Update experiment matrix in `run_all_experiments.py`
-3. Add tests in `tests/`
+## Experiment Configurations
 
-## 📝 Hardware Requirements
+- **B-FP**: Baseline fixed-rank LoRA (FP16)
+- **B-Q4**: Baseline 4-bit QLoRA  
+- **B-Ada**: Baseline AdaLoRA (adaptive rank)
+- **Joint-1/2/3**: Combined adaptive rank + quantization
 
-- **Minimum**: MacBook with M1/M2 chip, 8GB RAM
-- **Recommended**: MacBook with M3 chip, 16GB+ RAM
-- **GPU**: Uses MPS when available, falls back to CPU for quantization
+## Quantization Backends
 
-## 📖 Implementation Details
+Use `--quant-backend` to control quantization strategy:
 
-### Key Libraries
-- 🤗 Transformers ≥4.40 (model loading)
-- PEFT ≥0.10 (LoRA/AdaLoRA)
-- bitsandbytes ≥0.43 (quantization)
-- PyTorch ≥2.2 (training)
+- `auto`: Auto-detect best backend (default)
+- `cuda-4bit`: 4-bit quantization on GPU
+- `cuda-8bit`: 8-bit quantization on GPU  
+- `cpu-int8`: 8-bit CPU quantization
+- `none`: Disable quantization
 
-### Quantization Strategy
-- **4-bit**: NF4 quantization with double quantization
-- **8-bit**: Standard int8 quantization
-- **Mixed**: Per-layer precision allocation
+Examples:
+```bash
+# Force CPU quantization
+python run_experiment.py --config B-Q4 --task sst2 --quant-backend cpu-int8
 
-### LoRA Configuration
-- **Fixed**: Uniform rank across all layers
-- **Adaptive**: SVD-based pruning (AdaLoRA)
-- **Manual**: Task-specific rank patterns
+# GPU-only 4-bit (fails on non-CUDA)
+python run_experiment.py --config B-Q4 --task sst2 --quant-backend cuda-4bit
 
-## 🎨 Memory Bank Integration
+# Disable quantization
+python run_experiment.py --config B-Q4 --task sst2 --quant-backend none
+```
 
-This project uses an enhanced memory management system:
-- `.memory/` directory contains project knowledge base
-- Automatic updates after successful experiments
-- Semantic search capabilities for project context
+## Troubleshooting
 
-## 🤝 Contributing
+### MPS Tensor Size Limit Error
 
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with tests
-4. Run `make lint` and `make test`
-5. Submit a pull request
+If you see:
+```
+MPSNDArray.mm:788: failed assertion `[MPSNDArray initWithDevice:descriptor:] Error: total bytes of NDArray > 2**32'
+```
 
-## 📚 References
+**Solutions:**
+1. **Use smaller batch sizes**: `--batch-size 4` or `--batch-size 2`
+2. **Use Docker with GPU**: Recommended for quantization experiments
+3. **Disable quantization**: `--quant-backend none` for local testing
 
-- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
-- [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
-- [AdaLoRA: Adaptive Budget Allocation for Parameter-Efficient Fine-Tuning](https://arxiv.org/abs/2303.10512)
+### High Memory Usage
 
-## 📄 License
+For systems with limited RAM:
+- Reduce batch size: `--batch-size 4`
+- Use gradient accumulation (automatically adjusted)
+- Close other applications
 
-MIT License - see LICENSE file for details.
+### Quantization Issues
 
-## 🙋 Support
+On Apple Silicon:
+- Use `--quant-backend none` for local development
+- Use Docker with GPU for full quantization experiments
+- CPU quantization: `--quant-backend cpu-int8` (slower but stable)
 
-For questions or issues:
-1. Check existing issues in the repository
-2. Create a new issue with detailed description
-3. Include system information and error logs 
+## Results Structure
+
+```
+results/
+├── results_B-FP_sst2.json      # Individual experiment results
+├── results_B-Q4_wikitext2.json
+├── all_results.json            # Aggregated results
+└── experiment_summary.csv      # Summary table
+```
+
+## Hardware Requirements
+
+- **Local**: 16GB+ RAM, Apple M-series or Intel/AMD CPU
+- **Docker**: NVIDIA GPU with 8GB+ VRAM (recommended)
+- **Quantization**: CUDA-compatible GPU or CPU fallback 

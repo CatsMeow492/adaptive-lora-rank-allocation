@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 import pandas as pd
+import torch
 
 
 def run_experiment_matrix(
@@ -16,24 +17,39 @@ def run_experiment_matrix(
     seed: int = 42,
     epochs: int = 3,
     batch_size: int = 8,
-    learning_rate: float = 2e-4,
+    learning_rate: float = 1e-4,
 ) -> List[Dict[str, Any]]:
-    """Run all experiments in the matrix."""
+    """Run the full experiment matrix."""
     
-    # Define experiment matrix
+    # Auto-detect MPS and adjust batch size
+    import platform
+    is_mac_mps = (
+        platform.system() == "Darwin" and 
+        platform.processor() == "arm" and 
+        torch.backends.mps.is_available()
+    )
+    
+    # Apply MPS-safe settings
+    if is_mac_mps and batch_size > 4:
+        print(f"MPS detected: reducing batch size from {batch_size} to 4 for stability")
+        batch_size = 4
+    
+    # Experiment configurations
     configs = ["B-FP", "B-Q4", "B-Ada", "Joint-1", "Joint-2", "Joint-3"]
     tasks = ["sst2", "wikitext2"]
     models = {
         "sst2": "bert-base-uncased",
-        "wikitext2": "gpt2",
+        "wikitext2": "gpt2"
     }
     
     results = []
     total_experiments = len(configs) * len(tasks)
     current_experiment = 0
     
-    print(f"Starting {total_experiments} experiments...")
     start_time = time.time()
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
     
     for config in configs:
         for task in tasks:
@@ -57,6 +73,13 @@ def run_experiment_matrix(
                 "--learning-rate", str(learning_rate),
             ]
             
+            # Add MPS-safe flag if detected
+            if is_mac_mps:
+                cmd.append("--mps-safe")
+                # Add FP32 flag for language modeling tasks on MPS
+                if task == "wikitext2":
+                    cmd.append("--fp32")
+            
             # Run experiment
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)  # 2 hour timeout
@@ -76,6 +99,10 @@ def run_experiment_matrix(
                     print(f"❌ Failed: {config} on {task}")
                     print(f"Error: {result.stderr}")
                     
+                    # Check for MPS-specific errors
+                    if "MPS" in result.stderr or "total bytes of NDArray > 2**32" in result.stderr:
+                        print("💡 MPS tensor size limit error - try using Docker with GPU backend")
+                    
             except subprocess.TimeoutExpired:
                 print(f"⏰ Timeout: {config} on {task}")
             except Exception as e:
@@ -83,8 +110,7 @@ def run_experiment_matrix(
     
     total_time = time.time() - start_time
     print(f"\n{'='*80}")
-    print(f"All experiments completed in {total_time:.2f} seconds")
-    print(f"Successful experiments: {len(results)}/{total_experiments}")
+    print(f"Completed {len(results)}/{total_experiments} experiments in {total_time:.2f} seconds")
     print(f"{'='*80}")
     
     return results
@@ -145,7 +171,7 @@ def main():
                        help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=8,
                        help="Batch size")
-    parser.add_argument("--learning-rate", type=float, default=2e-4,
+    parser.add_argument("--learning-rate", type=float, default=1e-4,
                        help="Learning rate")
     
     args = parser.parse_args()

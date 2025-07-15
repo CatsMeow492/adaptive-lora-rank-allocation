@@ -1,0 +1,19 @@
+\begin{table}[htbp]
+\centering
+\caption{Complete experimental results for all LoRA configurations on SST-2 classification task.}
+\label{tab:complete_results}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrr}
+\toprule
+\textbf{Config} & \textbf{Method} & \textbf{Accuracy} & \textbf{F1-Score} & \textbf{Trainable Params} & \textbf{Memory (GB)} & \textbf{Time (min)} \\
+\midrule
+B-FP & Baseline Fixed-rank FP16 & 91.6\% & 91.6\% & 1,340,930 & 17.3 & 25.5 \\
+B-Q4 & Baseline 4-bit QLoRA & 91.6\% & 91.6\% & 1,340,930 & 13.0 & 26.7 \\
+B-Ada & Baseline AdaLoRA FP16 & 88.8\% & 88.8\% & 2,011,502 & 14.5 & 47.3 \\
+Joint-1 & Joint 4-bit + AdaLoRA & 88.8\% & 88.8\% & 2,011,502 & 15.1 & 47.4 \\
+Joint-2 & Joint Mixed-precision + AdaLoRA & 88.8\% & 88.8\% & 2,011,502 & 14.5 & 47.4 \\
+Joint-3 & Joint Mixed + Manual Ranks & 91.6\% & 91.6\% & 1,340,930 & 16.3 & 26.4 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

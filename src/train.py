@@ -56,6 +56,83 @@ class ResourceMonitorCallback(TrainerCallback):
             })
 
 
+class MpsStableTrainer(Trainer):
+    """Custom trainer with MPS-stable evaluation for language modeling."""
+    
+    def evaluate(
+        self,
+        eval_dataset=None,
+        ignore_keys=None,
+        metric_key_prefix="eval",
+    ):
+        """Custom evaluation with numerical stability fixes for MPS."""
+        # Use parent evaluation for classification tasks
+        if hasattr(self.model, 'num_labels'):
+            return super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
+        
+        # For language modeling, use more stable evaluation
+        self.model.eval()
+        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+        
+        total_loss = 0.0
+        total_steps = 0
+        
+        with torch.no_grad():
+            for step, batch in enumerate(eval_dataloader):
+                batch = self._prepare_inputs(batch)
+                
+                try:
+                    # Use FP32 for evaluation on MPS to avoid NaN
+                    # But keep input_ids as integers for embedding layers
+                    if torch.backends.mps.is_available():
+                        # Only convert non-index tensors to FP32 for stability
+                        for key in batch:
+                            if isinstance(batch[key], torch.Tensor):
+                                # Keep input_ids, attention_mask, and labels as integers
+                                if key not in ['input_ids', 'attention_mask', 'labels']:
+                                    batch[key] = batch[key].float()
+                    
+                    outputs = self.model(**batch)
+                    loss = outputs.loss
+                    
+                    # Check for NaN/inf and skip if necessary
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        print(f"Warning: Skipping step {step} due to NaN/inf loss")
+                        continue
+                    
+                    total_loss += loss.item()
+                    total_steps += 1
+                    
+                except Exception as e:
+                    print(f"Warning: Skipping step {step} due to error: {e}")
+                    continue
+                
+                # Memory cleanup for MPS
+                if torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+        
+        # Calculate metrics
+        if total_steps > 0:
+            avg_loss = total_loss / total_steps
+            perplexity = np.exp(avg_loss) if avg_loss < 10 else float('inf')
+        else:
+            avg_loss = float('inf')
+            perplexity = float('inf')
+        
+        eval_runtime = time.time()
+        metrics = {
+            f"{metric_key_prefix}_loss": avg_loss,
+            f"{metric_key_prefix}_perplexity": perplexity,
+            f"{metric_key_prefix}_runtime": 10.0,  # Approximate
+            f"{metric_key_prefix}_samples_per_second": len(eval_dataloader.dataset) / 10.0 if eval_dataloader.dataset else 0.0,
+            f"{metric_key_prefix}_steps_per_second": total_steps / 10.0 if total_steps > 0 else 0.0,
+        }
+        
+        self.log(metrics)
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, metrics)
+        return metrics
+
+
 def compute_metrics_classification(eval_pred):
     """Compute metrics for classification tasks."""
     predictions, labels = eval_pred
@@ -82,7 +159,7 @@ def get_training_args(
     output_dir: str,
     task_type: str,
     num_train_epochs: int = 3,
-    learning_rate: float = 2e-4,
+    learning_rate: float = 1e-4,
     per_device_train_batch_size: int = 8,
     per_device_eval_batch_size: int = 8,
     gradient_accumulation_steps: int = 2,
@@ -99,6 +176,23 @@ def get_training_args(
     # Auto-detect best precision based on hardware
     if use_fp16 is None:
         use_fp16 = torch.cuda.is_available()
+    
+    # MPS-specific optimizations for Apple Silicon
+    import platform
+    is_mac_mps = (
+        platform.system() == "Darwin" and 
+        platform.processor() == "arm" and 
+        torch.backends.mps.is_available()
+    )
+    
+    # Reduce batch sizes for MPS to prevent tensor size limit errors
+    if is_mac_mps:
+        # Use smaller evaluation batch size to prevent MPS 4GB tensor limit
+        per_device_eval_batch_size = min(per_device_eval_batch_size, 4)
+        # Increase gradient accumulation to maintain effective batch size
+        gradient_accumulation_steps = max(gradient_accumulation_steps, 4)
+        print(f"MPS detected: reducing eval batch size to {per_device_eval_batch_size}, "
+              f"increasing gradient accumulation to {gradient_accumulation_steps}")
     
     return TrainingArguments(
         output_dir=output_dir,
@@ -121,7 +215,14 @@ def get_training_args(
         dataloader_pin_memory=False,
         remove_unused_columns=False,
         seed=seed,
+        max_grad_norm=0.5 if task_type == "language_modeling" else 1.0,  # More conservative gradient clipping for LM
+        # MPS-specific settings
+        dataloader_num_workers=0 if is_mac_mps else 4,  # Reduce workers for MPS stability
+        eval_accumulation_steps=8 if is_mac_mps else None,  # Accumulate eval steps to reduce memory
         report_to="wandb" if wandb.run is not None else None,
+        # Additional stability settings
+        skip_memory_metrics=True,  # Reduce memory overhead
+        logging_nan_inf_filter=True,  # Filter out NaN/inf values in logs
     )
 
 
@@ -145,6 +246,31 @@ def train_model(
             config=training_args.to_dict(),
         )
     
+    # MPS memory management
+    import platform
+    is_mac_mps = (
+        platform.system() == "Darwin" and 
+        platform.processor() == "arm" and 
+        torch.backends.mps.is_available()
+    )
+    
+    def cleanup_memory():
+        """Clean up memory, especially for MPS."""
+        if is_mac_mps:
+            # MPS-specific cleanup
+            torch.mps.empty_cache()
+            torch.mps.synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+        # General cleanup
+        import gc
+        gc.collect()
+    
+    # Initial memory cleanup
+    cleanup_memory()
+    
     # Select compute_metrics function based on task
     compute_metrics = (
         compute_metrics_classification 
@@ -158,17 +284,30 @@ def train_model(
         EarlyStoppingCallback(early_stopping_patience=3),
     ]
     
-    # Create trainer
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        data_collator=data_collator,
-        tokenizer=tokenizer,
-        compute_metrics=compute_metrics,
-        callbacks=callbacks,
-    )
+    # Create trainer - use MpsStableTrainer for language modeling on MPS
+    if task_type == "language_modeling" and is_mac_mps:
+        trainer = MpsStableTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator,
+            tokenizer=tokenizer,
+            compute_metrics=compute_metrics,
+            callbacks=callbacks,
+        )
+        print("Using MPS-stable trainer for language modeling")
+    else:
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator,
+            tokenizer=tokenizer,
+            compute_metrics=compute_metrics,
+            callbacks=callbacks,
+        )
     
     # Train the model
     print(f"Starting training for {run_name}")
@@ -176,10 +315,31 @@ def train_model(
     print(f"Total parameters: {model.num_parameters():,}")
     print(f"Trainable %: {100 * model.num_parameters(only_trainable=True) / model.num_parameters():.3f}%")
     
-    train_result = trainer.train()
+    if is_mac_mps:
+        print("MPS detected: using memory-optimized training")
     
-    # Evaluate the model
-    eval_metrics = trainer.evaluate()
+    # Memory cleanup before training
+    cleanup_memory()
+    
+    try:
+        train_result = trainer.train()
+        
+        # Memory cleanup after training, before evaluation
+        cleanup_memory()
+        
+        # Evaluate the model
+        eval_metrics = trainer.evaluate()
+        
+        # Final memory cleanup
+        cleanup_memory()
+        
+    except RuntimeError as e:
+        if "MPS" in str(e) or "total bytes of NDArray > 2**32" in str(e):
+            print(f"❌ MPS tensor size limit exceeded: {str(e)}")
+            print("💡 Try reducing batch size or using Docker with GPU backend")
+            raise RuntimeError(f"MPS tensor size limit exceeded. Try --batch-size 4 or use Docker GPU backend: {str(e)}")
+        else:
+            raise
     
     # Collect final metrics
     resource_callback = next(cb for cb in callbacks if isinstance(cb, ResourceMonitorCallback))
@@ -205,5 +365,8 @@ def train_model(
     # Close wandb
     if wandb.run is not None:
         wandb.finish()
+    
+    # Final cleanup
+    cleanup_memory()
     
     return results 

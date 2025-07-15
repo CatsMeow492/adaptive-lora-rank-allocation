@@ -1,0 +1,41 @@
+\begin{thebibliography}{1}
+
+\bibitem{dettmers2023qlora}
+Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer.
+\newblock Qlora: Efficient finetuning of quantized llms.
+\newblock In {\em Advances in Neural Information Processing Systems},
+  volume~36, pages 10088--10115, 2023.
+
+\bibitem{houlsby2019parameter}
+Neil Houlsby, Andrei Giurgiu, Stanislaw Jastrzebski, Bruna Morrone, Quentin
+  De~Laroussilhe, Andrea Gesmundo, Mona Attariyan, and Sylvain Gelly.
+\newblock Parameter-efficient transfer learning for nlp.
+\newblock In {\em International Conference on Machine Learning}, pages
+  2790--2799. PMLR, 2019.
+
+\bibitem{hu2021lora}
+Edward~J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean
+  Wang, Lu~Wang, and Weizhu Chen.
+\newblock Lora: Low-rank adaptation of large language models.
+\newblock In {\em International Conference on Learning Representations}, 2022.
+
+\bibitem{merity2016pointer}
+Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher.
+\newblock Pointer sentinel mixture models.
+\newblock {\em arXiv preprint arXiv:1609.07843}, 2016.
+
+\bibitem{socher2013recursive}
+Richard Socher, Alex Perelygin, Jean Wu, Jason Chuang, Christopher~D Manning,
+  Andrew~Y Ng, and Christopher Potts.
+\newblock Recursive deep models for semantic compositionality over a sentiment
+  treebank.
+\newblock In {\em Proceedings of the 2013 Conference on Empirical Methods in
+  Natural Language Processing}, pages 1631--1642, 2013.
+
+\bibitem{zhang2023adaptive}
+Qingru Zhang, Minshuo Chen, Alexander Bukharin, Pengcheng He, Yu~Cheng, Weizhu
+  Chen, and Tuo Zhao.
+\newblock Adaptive budget allocation for parameter-efficient fine-tuning.
+\newblock In {\em International Conference on Learning Representations}, 2023.
+
+\end{thebibliography}
